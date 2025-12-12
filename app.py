@@ -5,7 +5,7 @@ from gemini_agent import GeminiAgent
 # ------------------------------
 # Load Dataset
 # ------------------------------
-CSV_PATH = "masked_data.csv"  # <- your actual file name
+CSV_PATH = "masked_data.csv"  # make sure this file is in the same folder
 
 st.title("📊 Student Performance Analysis (with Gemini AI Summary)")
 
