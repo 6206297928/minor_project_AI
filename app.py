@@ -1,147 +1,187 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-import joblib
-import google.generativeai as genai
-
-# ---------------------------------------------------------
-# LOAD MODEL + SCALER + ENCODERS
-# ---------------------------------------------------------
-MODEL_PATH = "model/random_forest.pkl"
-SCALER_PATH = "model/scaler.pkl"
-ENCODER_PATH = "model/encoders.pkl"
-
-model = joblib.load(MODEL_PATH)
-scaler = joblib.load(SCALER_PATH)
-encoders = joblib.load(ENCODER_PATH)
-
-# ---------------------------------------------------------
-# CLEAN STREAMLIT UI
-# ---------------------------------------------------------
-st.set_page_config(page_title="Student Performance AI", layout="centered")
-st.title("🎓 Student Performance Prediction (AI Powered)")
-st.write("Fill the inputs below and enter your Gemini API key to get AI-generated analysis.")
+from sklearn.preprocessing import LabelEncoder, StandardScaler
+from sklearn.ensemble import RandomForestClassifier
+from gemini_agent import GeminiAgent
 
 
-# ---------------------------------------------------------
-# FUNCTION: GEMINI AI SUMMARY
-# ---------------------------------------------------------
-def summarize_with_gemini(api_key: str, prediction: float, details: dict) -> str:
-    genai.configure(api_key=api_key)
-
-    prompt = f"""
-You are an educational data analyst AI. Analyze the student's academic profile:
-
-🎯 Predicted Score: {prediction}
-
-📌 Student Inputs:
-- Gender: {details['Gender']}
-- Age: {details['Age']}
-- Study Hours per Week: {details['Study_Hours']}
-- Attendance: {details['Attendance']}%
-- Parent Education Level: {details['Parent_Education_Level']}
-- Family Income: {details['Family_Income_Level']}
-- Extracurricular Activities: {details['Extracurricular_Activities']}
-- Internet Access at Home: {details['Internet_Access']}
-- Stress Level: {details['Stress_Level']}
-- Sleep Hours: {details['Sleep_Hours']}
-
-Write a short summary covering:
-1. Expected academic performance  
-2. Strengths  
-3. Risk factors  
-4. Personalized improvement tips  
-"""
-
-    response = genai.generate_text(
-        model="gemini-2.0-flash-lite-preview-02-05",
-        prompt=prompt
-    )
-
-    return response.text
+# -----------------------------------------
+# STREAMLIT PAGE CONFIG
+# -----------------------------------------
+st.set_page_config(page_title="AI Student Performance Predictor", layout="wide")
+st.title("🎓 AI-Powered Student Performance Predictor")
+st.markdown("Predict student grade + get AI-generated summary using Gemini.")
 
 
-# ---------------------------------------------------------
-# FUNCTION: BUILD MODEL INPUT VECTOR
-# ---------------------------------------------------------
-def build_feature_vector():
-    gender = st.selectbox("Gender", encoders["Gender"].classes_)
-    age = st.slider("Age", 15, 30, 20)
-    attendance = st.slider("Attendance (%)", 0, 100, 75)
-    study_hours = st.slider("Study Hours per Week", 0, 40, 10)
-    extracurricular = st.selectbox("Extracurricular Activities", encoders["Extracurricular_Activities"].classes_)
-    internet = st.selectbox("Internet Access at Home", encoders["Internet_Access_at_Home"].classes_)
-    parent_edu = st.selectbox("Parent Education Level", encoders["Parent_Education_Level"].classes_)
-    income = st.selectbox("Family Income Level", encoders["Family_Income_Level"].classes_)
-    stress = st.slider("Stress Level (1–10)", 1, 10, 5)
-    sleep = st.slider("Sleep Hours per Night", 3, 12, 7)
-    dept = st.selectbox("Department", ["CS", "Engineering", "Mathematics"])
 
-    user_details = {
+# -----------------------------------------
+# LOAD DATA + TRAIN MODEL (NO PKL FILES)
+# -----------------------------------------
+@st.cache_resource
+def load_and_train():
+    df = pd.read_csv("masked_data.csv")
+
+    # ---- Fill Missing ----
+    df["Parent_Education_Level"] = df["Parent_Education_Level"].fillna("Bachelor's")
+
+    # ---- Encode Binary ----
+    df["Gender"] = df["Gender"].map({"Male": 0, "Female": 1})
+    df["Extracurricular_Activities"] = df["Extracurricular_Activities"].map({"No": 0, "Yes": 1})
+    df["Internet_Access_at_Home"] = df["Internet_Access_at_Home"].map({"No": 0, "Yes": 1})
+
+    # ---- Ordinal Encoding ----
+    edu_map = {"High School": 1, "Bachelor's": 2, "Master's": 3, "PhD": 4}
+    df["Parent_Education_Level"] = df["Parent_Education_Level"].map(edu_map)
+
+    income_map = {"Low": 1, "Medium": 2, "High": 3}
+    df["Family_Income_Level"] = df["Family_Income_Level"].map(income_map)
+
+    # ---- One-hot Encoding Department ----
+    df = pd.get_dummies(df, columns=["Department"], drop_first=True)
+
+    # Fill missing numeric values
+    df.fillna(df.mean(numeric_only=True), inplace=True)
+
+    # ---- Label Encode Target ----
+    encoder = LabelEncoder()
+    df["Grade"] = encoder.fit_transform(df["Grade"])
+
+    # ---- Feature Scaling ----
+    numeric_cols = df.select_dtypes(include=["int64", "float64"]).columns.tolist()
+    numeric_cols = [c for c in numeric_cols if c != "Grade"]
+
+    scaler = StandardScaler()
+    df[numeric_cols] = scaler.fit_transform(df[numeric_cols])
+
+    # ---- Train Model ----
+    X = df.drop("Grade", axis=1)
+    y = df["Grade"]
+
+    model = RandomForestClassifier(n_estimators=200, random_state=42)
+    model.fit(X, y)
+
+    return model, scaler, encoder, X.columns, df
+
+
+model, scaler, encoder, model_columns, df_ref = load_and_train()
+
+
+
+# -----------------------------------------
+# GEMINI API KEY INPUT
+# -----------------------------------------
+st.sidebar.subheader("🔑 Enter Gemini API Key")
+api_key = st.sidebar.text_input("Gemini API Key", type="password")
+agent = None
+
+if api_key:
+    agent = GeminiAgent(api_key)
+else:
+    st.warning("Please enter your Gemini API key to enable AI summary.")
+
+
+
+# -----------------------------------------
+# USER INPUT SECTION
+# -----------------------------------------
+st.sidebar.header("Student Parameters")
+
+def user_input():
+    gender = st.sidebar.selectbox("Gender", ("Male", "Female"))
+    dept = st.sidebar.selectbox("Department", ("CS", "Engineering", "Mathematics"))
+    parent_edu = st.sidebar.selectbox("Parent Education", ("High School", "Bachelor's", "Master's", "PhD"))
+    income = st.sidebar.selectbox("Family Income", ("Low", "Medium", "High"))
+    extra = st.sidebar.selectbox("Extracurricular Activities", ("Yes", "No"))
+    internet = st.sidebar.selectbox("Internet Access at Home", ("Yes", "No"))
+
+    attendance = st.sidebar.slider("Attendance (%)", 0, 100, 80)
+    study_hours = st.sidebar.number_input("Study Hours per Week", 0, 80, 15)
+    sleep = st.sidebar.number_input("Sleep Hours per Night", 1, 12, 7)
+    stress = st.sidebar.slider("Stress Level (1-10)", 1, 10, 5)
+
+    midterm = st.sidebar.number_input("Midterm Score", 0, 100, 70)
+    final = st.sidebar.number_input("Final Score", 0, 100, 75)
+    assignments = st.sidebar.number_input("Assignments Avg", 0, 100, 80)
+    projects = st.sidebar.number_input("Projects Score", 0, 100, 85)
+
+    # ---- Auto-computed fields ----
+    quizzes = df_ref["Quizzes_Avg"].mean()
+    participation = df_ref["Participation_Score"].mean()
+    age = df_ref["Age"].mean()
+
+    total = midterm + final + assignments + projects + quizzes + participation
+
+    d = {
         "Gender": gender,
         "Age": age,
-        "Attendance": attendance,
-        "Study_Hours": study_hours,
-        "Extracurricular_Activities": extracurricular,
-        "Internet_Access": internet,
+        "Attendance (%)": attendance,
+        "Midterm_Score": midterm,
+        "Final_Score": final,
+        "Assignments_Avg": assignments,
+        "Quizzes_Avg": quizzes,
+        "Participation_Score": participation,
+        "Projects_Score": projects,
+        "Total_Score": total,
+        "Study_Hours_per_Week": study_hours,
+        "Extracurricular_Activities": extra,
+        "Internet_Access_at_Home": internet,
         "Parent_Education_Level": parent_edu,
         "Family_Income_Level": income,
-        "Stress_Level": stress,
-        "Sleep_Hours": sleep,
-        "Department": dept,
+        "Stress_Level (1-10)": stress,
+        "Sleep_Hours_per_Night": sleep,
+        "Department": dept
     }
 
-    # -----------------------------
-    # BUILD MODEL FEATURE VECTOR
-    # -----------------------------
-    X = {}
-
-    # Label-encoded categorical features
-    X["Gender"] = encoders["Gender"].transform([gender])[0]
-    X["Extracurricular_Activities"] = encoders["Extracurricular_Activities"].transform([extracurricular])[0]
-    X["Internet_Access_at_Home"] = encoders["Internet_Access_at_Home"].transform([internet])[0]
-    X["Parent_Education_Level"] = encoders["Parent_Education_Level"].transform([parent_edu])[0]
-    X["Family_Income_Level"] = encoders["Family_Income_Level"].transform([income])[0]
-
-    # Numeric features
-    X["Age"] = age
-    X["Attendance (%)"] = attendance
-    X["Study_Hours_per_Week"] = study_hours
-    X["Stress_Level (1-10)"] = stress
-    X["Sleep_Hours_per_Night"] = sleep
-
-    # One-hot encoded department
-    X["Department_CS"] = 1 if dept == "CS" else 0
-    X["Department_Engineering"] = 1 if dept == "Engineering" else 0
-    X["Department_Mathematics"] = 1 if dept == "Mathematics" else 0
-
-    df = pd.DataFrame([X])
-    df_scaled = scaler.transform(df)
-
-    return df_scaled, user_details
+    return pd.DataFrame([d])
 
 
-# ---------------------------------------------------------
-# INPUT SECTION
-# ---------------------------------------------------------
-st.subheader("🔧 Enter Student Details")
-input_data, details = build_feature_vector()
+input_df = user_input()
+st.subheader("📌 Input Preview")
+st.dataframe(input_df, use_container_width=True)
 
-st.subheader("🔑 Gemini API Key")
-api_key = st.text_input("Enter your Gemini API key", type="password")
 
-if st.button("Predict & Generate AI Summary"):
-    if not api_key:
-        st.error("Please enter your Gemini API key.")
-    else:
-        # ML Prediction
-        prediction = model.predict(input_data)[0]
 
-        st.success(f"🎯 **Predicted Grade Score: {prediction}**")
+# -----------------------------------------
+# PREPROCESS INPUT BEFORE PREDICTION
+# -----------------------------------------
+def preprocess_input(df):
+    df = df.copy()
 
-        # AI Summary
-        with st.spinner("Generating AI summary..."):
-            ai_summary = summarize_with_gemini(api_key, prediction, details)
+    df["Gender"] = df["Gender"].map({"Male": 0, "Female": 1})
+    df["Extracurricular_Activities"] = df["Extracurricular_Activities"].map({"No": 0, "Yes": 1})
+    df["Internet_Access_at_Home"] = df["Internet_Access_at_Home"].map({"No": 0, "Yes": 1})
 
-        st.subheader("🧠 AI Summary")
-        st.write(ai_summary)
+    edu_map = {"High School": 1, "Bachelor's": 2, "Master's": 3, "PhD": 4}
+    df["Parent_Education_Level"] = df["Parent_Education_Level"].map(edu_map)
+
+    income_map = {"Low": 1, "Medium": 2, "High": 3}
+    df["Family_Income_Level"] = df["Family_Income_Level"].map(income_map)
+
+    df = pd.get_dummies(df, columns=["Department"], drop_first=True)
+
+    # Align columns with model
+    df = df.reindex(columns=model_columns, fill_value=0)
+
+    # Scale numeric features
+    num_cols = df.select_dtypes(include=["float64", "int64"]).columns
+    df[num_cols] = scaler.transform(df[num_cols])
+
+    return df
+
+
+
+# -----------------------------------------
+# PREDICTION BUTTON
+# -----------------------------------------
+if st.button("🔮 Predict Grade"):
+    processed = preprocess_input(input_df)
+    pred_encoded = model.predict(processed)[0]
+    pred_label = encoder.inverse_transform([pred_encoded])[0]
+
+    st.success(f"### 🎯 Predicted Grade: **{pred_label}**")
+
+    if agent:
+        st.subheader("🧠 AI-Generated Performance Summary")
+        summary = agent.get_summary(input_df, pred_label)
+        st.write(summary)
