@@ -3,7 +3,8 @@ import google.generativeai as genai
 class GeminiAgent:
     def __init__(self, api_key: str):
         genai.configure(api_key=api_key)
-        self.model = genai.GenerativeModel("gemini-1.5-flash")
+        # Use Gemini 2.5
+        self.model = genai.GenerativeModel("gemini-2.5")
 
     def summarize(self, text: str) -> str:
         try:
