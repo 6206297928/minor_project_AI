@@ -1,6 +1,5 @@
 streamlit
-bs4==0.0.2
-requests
-pandas
 google-generativeai
-urllib3
+pandas
+beautifulsoup4
+requests
