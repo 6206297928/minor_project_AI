@@ -1,52 +1,104 @@
 import streamlit as st
 import pandas as pd
-import joblib
-import os
+import numpy as np
+from sklearn.preprocessing import LabelEncoder
+from sklearn.model_selection import train_test_split
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.metrics import accuracy_score
 from gemini_agent import GeminiAgent
 
-st.set_page_config(page_title="Student Performance Analyzer", layout="wide")
-st.title("📊 Student Performance Analyzer — Single AI Agent")
+# ---------------------------------------------------------
+# PAGE SETUP
+# ---------------------------------------------------------
+st.set_page_config(page_title="Student Performance AI Agent", layout="wide")
 
-# User API Key
-st.subheader("🔑 Enter Gemini API Key")
-api_key = st.text_input("Gemini API Key", type="password")
-agent = GeminiAgent(api_key) if api_key else None
+st.title("🎓 Student Performance Analysis (AI Agent Enabled)")
+st.write("Upload student features → Model predicts grade → Gemini summarizes insights.")
 
-# Upload Dataset
-st.subheader("📂 Upload Dataset (CSV)")
-file = st.file_uploader("Choose CSV File", type=["csv"])
 
-df = None
-if file:
-    df = pd.read_csv(file)
-    st.write("### 🔍 Data Preview")
-    st.dataframe(df.head())
+# ---------------------------------------------------------
+# LOAD DATA
+# ---------------------------------------------------------
+@st.cache_data
+def load_data():
+    df = pd.read_csv("masked_data.csv")
 
-# Load Model
-model_path = "model/model.joblib"
-scaler_path = "model/scaler.joblib"
+    # encode categorical columns
+    cat_cols = df.select_dtypes(include=["object"]).columns
+    le_map = {}
 
-model = joblib.load(model_path) if os.path.exists(model_path) else None
-scaler = joblib.load(scaler_path) if os.path.exists(scaler_path) else None
+    for col in cat_cols:
+        le = LabelEncoder()
+        df[col] = le.fit_transform(df[col].astype(str))
+        le_map[col] = le
 
-if st.button("🚀 Run Analysis"):
-    if not api_key:
-        st.error("❌ Enter Gemini API key.")
-    elif df is None:
-        st.error("❌ Upload a dataset.")
-    elif model is None or scaler is None:
-        st.error("❌ Model or scaler missing in /model folder.")
+    return df, le_map
+
+
+df, le_map = load_data()
+
+
+# ---------------------------------------------------------
+# TRAIN MODEL IN-MEMORY
+# ---------------------------------------------------------
+@st.cache_resource
+def train_model(df):
+    X = df.drop("Grade", axis=1)
+    y = df["Grade"]
+
+    model = RandomForestClassifier(n_estimators=300, random_state=42)
+    model.fit(X, y)
+
+    return model, X.columns
+
+
+model, feature_names = train_model(df)
+
+st.success("✔ Model trained successfully!")
+
+
+# ---------------------------------------------------------
+# USER INPUT FORM
+# ---------------------------------------------------------
+st.header("📥 Enter Student Details")
+
+input_data = {}
+
+for col in feature_names:
+    if df[col].dtype in ["float64", "int64"]:
+        val = st.number_input(f"{col}", float(df[col].min()), float(df[col].max()))
     else:
-        numeric_cols = df.select_dtypes(include=["int64", "float64"]).columns
-        scaled = scaler.transform(df[numeric_cols])
-        preds = model.predict(scaled)
-        df["Predicted_Grade"] = preds
+        val = st.selectbox(f"{col}", sorted(df[col].unique()))
+    input_data[col] = val
 
-        st.success("✅ Prediction completed!")
-        st.dataframe(df.head())
+input_df = pd.DataFrame([input_data])
 
-        with st.spinner("🤖 AI is generating insights..."):
-            summary = agent.summarize(df, model)
+# ---------------------------------------------------------
+# PREDICTION
+# ---------------------------------------------------------
+if st.button("Predict Grade"):
+    prediction = model.predict(input_df)[0]
 
-        st.subheader("🧠 AI Summary Report")
-        st.write(summary)
+    st.subheader("🎯 Predicted Grade")
+    st.metric("Grade", prediction)
+
+    # -----------------------------------------------------
+    # GEMINI AGENT SUMMARY
+    # -----------------------------------------------------
+    with st.expander("✨ AI Agent Summary (Gemini)"):
+        st.write("Enter Gemini API key to generate explanation.")
+
+        api_key = st.text_input("Gemini API Key", type="password")
+
+        if api_key:
+            agent = GeminiAgent(api_key)
+
+            summary = agent.summarize_prediction(input_data, str(prediction))
+
+            st.write("### 📌 Summary")
+            st.write(summary)
+        else:
+            st.info("Provide your Gemini API key to get AI-generated insights.")
+
+
+st.caption("Built with ❤️ using Streamlit + Gemini + RandomForest")
