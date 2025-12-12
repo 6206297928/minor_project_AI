@@ -1,142 +1,147 @@
 import streamlit as st
 import pandas as pd
-import pickle
-from google import genai
-from google.genai.types import Content, Part
-import os
+import numpy as np
+import joblib
+import google.generativeai as genai
 
-# -----------------------------------------------------------
-# Load model + scaler + encoders
-# -----------------------------------------------------------
-MODEL_PATH = "model/model.pkl"
+# ---------------------------------------------------------
+# LOAD MODEL + SCALER + ENCODERS
+# ---------------------------------------------------------
+MODEL_PATH = "model/random_forest.pkl"
 SCALER_PATH = "model/scaler.pkl"
 ENCODER_PATH = "model/encoders.pkl"
 
-with open(MODEL_PATH, "rb") as f:
-    model = pickle.load(f)
+model = joblib.load(MODEL_PATH)
+scaler = joblib.load(SCALER_PATH)
+encoders = joblib.load(ENCODER_PATH)
 
-with open(SCALER_PATH, "rb") as f:
-    scaler = pickle.load(f)
+# ---------------------------------------------------------
+# CLEAN STREAMLIT UI
+# ---------------------------------------------------------
+st.set_page_config(page_title="Student Performance AI", layout="centered")
+st.title("🎓 Student Performance Prediction (AI Powered)")
+st.write("Fill the inputs below and enter your Gemini API key to get AI-generated analysis.")
 
-with open(ENCODER_PATH, "rb") as f:
-    encoders = pickle.load(f)
 
-# -----------------------------------------------------------
-# Allowed categorical values (to prevent unseen label errors)
-# -----------------------------------------------------------
-allowed_categories = {
-    "Gender": ["Male", "Female"],
-    "Parent_Education_Level": ["High School", "Diploma", "Graduate", "Post-Graduate"],
-    "Internet_Access": ["Yes", "No"],
-    "Extra_Classes": ["Yes", "No"],
-    "Sports_Activity": ["Yes", "No"]
-}
-
-# -----------------------------------------------------------
-# Streamlit UI
-# -----------------------------------------------------------
-st.title("📊 Student Performance Prediction AI")
-st.write("Enter the student details below:")
-
-# User enters Gemini API key
-api_key = st.text_input("🔐 Enter Gemini API Key", type="password")
-
-# Prevent further UI unless key provided
-if not api_key:
-    st.warning("Please enter your Gemini API key to continue.")
-    st.stop()
-
-# -----------------------------------------------------------
-# Input fields (clean)
-# -----------------------------------------------------------
-gender = st.selectbox("Gender", allowed_categories["Gender"])
-parent_edu = st.selectbox("Parent Education Level", allowed_categories["Parent_Education_Level"])
-study_hours = st.slider("Study Hours Per Day", 1, 12, 5)
-attendance = st.slider("Attendance (in %)", 30, 100, 85)
-internet = st.selectbox("Internet Access", allowed_categories["Internet_Access"])
-extra = st.selectbox("Extra Classes", allowed_categories["Extra_Classes"])
-sports = st.selectbox("Sports Activity", allowed_categories["Sports_Activity"])
-
-# -----------------------------------------------------------
-# Build feature vector safely
-# -----------------------------------------------------------
-def build_feature_vector():
-    inp = {}
-
-    # Encode using fitted encoders
-    inp["Gender"] = encoders["Gender"].transform([gender])[0]
-    inp["Parent_Education_Level"] = encoders["Parent_Education_Level"].transform([parent_edu])[0]
-    inp["Internet_Access"] = encoders["Internet_Access"].transform([internet])[0]
-    inp["Extra_Classes"] = encoders["Extra_Classes"].transform([extra])[0]
-    inp["Sports_Activity"] = encoders["Sports_Activity"].transform([sports])[0]
-
-    # Numeric fields
-    inp["Study_Hours"] = study_hours
-    inp["Attendance"] = attendance
-
-    return pd.DataFrame([inp])
-
-# -----------------------------------------------------------
-# Summarize with Gemini
-# -----------------------------------------------------------
+# ---------------------------------------------------------
+# FUNCTION: GEMINI AI SUMMARY
+# ---------------------------------------------------------
 def summarize_with_gemini(api_key: str, prediction: float, details: dict) -> str:
-    client = genai.Client(api_key=api_key)
+    genai.configure(api_key=api_key)
 
-    prompt_text = f"""
-    Summarize this student’s expected academic performance:
+    prompt = f"""
+You are an educational data analyst AI. Analyze the student's academic profile:
 
-    Prediction Score: {prediction}
+🎯 Predicted Score: {prediction}
 
-    Input Factors:
-    - Gender: {details['Gender']}
-    - Parent Education: {details['Parent_Education_Level']}
-    - Study Hours: {details['Study_Hours']}
-    - Attendance: {details['Attendance']}%
-    - Internet Access: {details['Internet_Access']}
-    - Extra Classes: {details['Extra_Classes']}
-    - Sports Activity: {details['Sports_Activity']}
+📌 Student Inputs:
+- Gender: {details['Gender']}
+- Age: {details['Age']}
+- Study Hours per Week: {details['Study_Hours']}
+- Attendance: {details['Attendance']}%
+- Parent Education Level: {details['Parent_Education_Level']}
+- Family Income: {details['Family_Income_Level']}
+- Extracurricular Activities: {details['Extracurricular_Activities']}
+- Internet Access at Home: {details['Internet_Access']}
+- Stress Level: {details['Stress_Level']}
+- Sleep Hours: {details['Sleep_Hours']}
 
-    Generate a short, student-friendly explanation.
-    """
+Write a short summary covering:
+1. Expected academic performance  
+2. Strengths  
+3. Risk factors  
+4. Personalized improvement tips  
+"""
 
-    response = client.models.generate_content(
+    response = genai.generate_text(
         model="gemini-2.0-flash-lite-preview-02-05",
-        contents=[Content(parts=[Part.from_text(prompt_text)])],
+        prompt=prompt
     )
 
     return response.text
 
 
-# -----------------------------------------------------------
-# Predict Button
-# -----------------------------------------------------------
-if st.button("Predict Performance"):
-    try:
-        df = build_feature_vector()
+# ---------------------------------------------------------
+# FUNCTION: BUILD MODEL INPUT VECTOR
+# ---------------------------------------------------------
+def build_feature_vector():
+    gender = st.selectbox("Gender", encoders["Gender"].classes_)
+    age = st.slider("Age", 15, 30, 20)
+    attendance = st.slider("Attendance (%)", 0, 100, 75)
+    study_hours = st.slider("Study Hours per Week", 0, 40, 10)
+    extracurricular = st.selectbox("Extracurricular Activities", encoders["Extracurricular_Activities"].classes_)
+    internet = st.selectbox("Internet Access at Home", encoders["Internet_Access_at_Home"].classes_)
+    parent_edu = st.selectbox("Parent Education Level", encoders["Parent_Education_Level"].classes_)
+    income = st.selectbox("Family Income Level", encoders["Family_Income_Level"].classes_)
+    stress = st.slider("Stress Level (1–10)", 1, 10, 5)
+    sleep = st.slider("Sleep Hours per Night", 3, 12, 7)
+    dept = st.selectbox("Department", ["CS", "Engineering", "Mathematics"])
 
-        numeric_cols = ["Study_Hours", "Attendance"]
-        df[numeric_cols] = scaler.transform(df[numeric_cols])
+    user_details = {
+        "Gender": gender,
+        "Age": age,
+        "Attendance": attendance,
+        "Study_Hours": study_hours,
+        "Extracurricular_Activities": extracurricular,
+        "Internet_Access": internet,
+        "Parent_Education_Level": parent_edu,
+        "Family_Income_Level": income,
+        "Stress_Level": stress,
+        "Sleep_Hours": sleep,
+        "Department": dept,
+    }
 
-        prediction = model.predict(df)[0]
+    # -----------------------------
+    # BUILD MODEL FEATURE VECTOR
+    # -----------------------------
+    X = {}
 
-        st.success(f"🎯 Predicted Performance Score: **{prediction:.2f}**")
+    # Label-encoded categorical features
+    X["Gender"] = encoders["Gender"].transform([gender])[0]
+    X["Extracurricular_Activities"] = encoders["Extracurricular_Activities"].transform([extracurricular])[0]
+    X["Internet_Access_at_Home"] = encoders["Internet_Access_at_Home"].transform([internet])[0]
+    X["Parent_Education_Level"] = encoders["Parent_Education_Level"].transform([parent_edu])[0]
+    X["Family_Income_Level"] = encoders["Family_Income_Level"].transform([income])[0]
 
-        # Prepare summary details
-        detail_map = {
-            "Gender": gender,
-            "Parent_Education_Level": parent_edu,
-            "Study_Hours": study_hours,
-            "Attendance": attendance,
-            "Internet_Access": internet,
-            "Extra_Classes": extra,
-            "Sports_Activity": sports
-        }
+    # Numeric features
+    X["Age"] = age
+    X["Attendance (%)"] = attendance
+    X["Study_Hours_per_Week"] = study_hours
+    X["Stress_Level (1-10)"] = stress
+    X["Sleep_Hours_per_Night"] = sleep
 
-        st.info("⏳ Generating AI summary...")
-        summary = summarize_with_gemini(api_key, prediction, detail_map)
+    # One-hot encoded department
+    X["Department_CS"] = 1 if dept == "CS" else 0
+    X["Department_Engineering"] = 1 if dept == "Engineering" else 0
+    X["Department_Mathematics"] = 1 if dept == "Mathematics" else 0
 
-        st.subheader("📘 AI Summary")
-        st.write(summary)
+    df = pd.DataFrame([X])
+    df_scaled = scaler.transform(df)
 
-    except Exception as e:
-        st.error(f"Error occurred: {str(e)}")
+    return df_scaled, user_details
+
+
+# ---------------------------------------------------------
+# INPUT SECTION
+# ---------------------------------------------------------
+st.subheader("🔧 Enter Student Details")
+input_data, details = build_feature_vector()
+
+st.subheader("🔑 Gemini API Key")
+api_key = st.text_input("Enter your Gemini API key", type="password")
+
+if st.button("Predict & Generate AI Summary"):
+    if not api_key:
+        st.error("Please enter your Gemini API key.")
+    else:
+        # ML Prediction
+        prediction = model.predict(input_data)[0]
+
+        st.success(f"🎯 **Predicted Grade Score: {prediction}**")
+
+        # AI Summary
+        with st.spinner("Generating AI summary..."):
+            ai_summary = summarize_with_gemini(api_key, prediction, details)
+
+        st.subheader("🧠 AI Summary")
+        st.write(ai_summary)
